@@ -1,0 +1,1124 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AWS CloudFormation template for dynamic Cloud 9 setups. Creates a Cloud9
+  bootstraps the instance.
+Parameters:
+  VpcCIDR:
+    Description: Please enter the IP range (CIDR notation) for this VPC
+    Type: String
+    Default: 10.192.0.0/16
+
+  PublicSubnet1CIDR:
+    Description: Please enter the IP range (CIDR notation) for the public subnet in the first Availability Zone
+    Type: String
+    Default: 10.192.10.0/24
+
+  ExampleC9InstanceType:
+    Description: Example Cloud9 instance type
+    Type: String
+    Default: t3.small
+    AllowedValues:
+      - t2.micro
+      - t3.micro
+      - t3.small
+      - t3.medium
+    ConstraintDescription: Must be a valid Cloud9 instance type
+  ExampleC9EnvType: 
+    Description: Environment type.
+    Default: self
+    Type: String
+    AllowedValues: 
+      - self
+      - 3rdParty
+    ConstraintDescription: must specify self or 3rdParty.
+  ExampleOwnerArn: 
+    Type: String
+    Description: The Arn of the Cloud9 Owner to be set if 3rdParty deployment.
+    Default: ""
+  ExampleC9InstanceVolumeSize: 
+    Type: Number
+    Description: The Size in GB of the Cloud9 Instance Volume. 
+    Default: 15
+  apiKey:
+    Description: API Key for deploying new CGPM
+    Type: String
+    Default: '******'
+    NoEcho: true
+  apiSecret:
+    Description: API Secret for deploying new CGPM
+    Type: String
+    Default: '******'
+    NoEcho: true
+  mailKey:
+    Description: API Secret for mailsac
+    Type: String
+    Default: '*******'
+    NoEcho: true
+  S3BucketName:
+    Description: Source S3 Bucket name
+    AllowedPattern: ^[0-9a-zA-Z]+([0-9a-zA-Z-]*[0-9a-zA-Z])*$
+    Type: String
+    Default: 'aws-jam-challenge-resources'
+    Description: S3 Bucket containing code to be copied into region (must have public access)
+  S3KeyPrefix:
+    Description: Source S3 Bucket folder
+    AllowedPattern: ^[0-9a-zA-Z-/]*$
+    Type: String
+    Default: 'chkp-wkldprotect-containers/'
+    Description: S3 Bucket folder containing code to be copied into region (must have public access)
+  CGAccountLayerZip:
+    Type: String
+    Default: 'cg-account-layer.zip'
+    Description: CG Layer Zip file
+  CGAccountDeploy:
+    Description: Deploy new CGPM accounts?
+    Default: 'true'
+    Type: String
+    AllowedValues:
+      - 'true'
+      - 'false'
+  C9Deploy:
+    Description: Deploy new C9 Instance?
+    Default: 'false'
+    Type: String
+    AllowedValues:
+      - 'true'
+      - 'false'
+  LatestAmiId:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
+  ClusterName:
+    Type: String
+    Default: "CheckPointJamsEKS"
+  KeyName:
+    Type: String
+    Description: Name for the keypair used to SSH into EC2 instances
+    # A default of "lab-key-pair" is required here to conform to AWS Jam convention. Any other default will not work.
+    Default: lab-key-pair
+  EC2Deploy:
+    Description: Deploy new EC2 Instance?
+    Default: 'true'
+    Type: String
+    AllowedValues:
+      - 'true'
+      - 'false'
+
+Conditions: 
+  Create3rdPartyResources: !Equals [ !Ref ExampleC9EnvType, 3rdParty ]
+  CGAccountDeployQ: !Equals
+  - !Ref CGAccountDeploy
+  - 'true'
+  C9JamsOwnerArn: !Equals [!Ref ExampleOwnerArn, '']
+  CreateC9: !Equals
+  - !Ref C9Deploy
+  - 'true'
+  CreateEC2: !Equals
+  - !Ref EC2Deploy
+  - 'true'
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCIDR
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: CheckPoint Jam 2021
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: Check Point Jam 2021
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      CidrBlock: !Ref PublicSubnet1CIDR
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Check Point Jam 2021 Public Subnet (AZ1)
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: Check Point Jam 2021 Public Routes
+
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet1
+
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: allow SSH
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '4444'
+          ToPort: '4444'
+          CidrIp: 0.0.0.0/0
+      VpcId: !Ref VPC
+
+  bastionHost:
+    Type: AWS::EC2::Instance
+    DependsOn:
+      - ExampleC9Role
+      - ExampleC9InstanceProfile
+      - InternetGatewayAttachment
+    Condition: CreateEC2
+    Metadata:
+      'AWS::CloudFormation::Init':
+        configSets:
+          resources:
+            - bashscripts
+            - cli_tools
+            - install_apps
+        bashscripts:
+          files:
+            /tmp/tools_bash.sh:
+              source: https://aws-jam-challenge-resources.s3.amazonaws.com/chkp-wkldprotect-containers/tools_bash.sh
+              mode: 100777
+              owner: root
+              group: root
+            /tmp/helm.sh:
+              source: https://aws-jam-challenge-resources.s3.amazonaws.com/chkp-wkldprotect-containers/helm.sh
+              mode: 000777
+              owner: root
+              group: root
+        cli_tools:
+          commands:
+            01_do:
+              command: . /tmp/tools_bash.sh
+        install_apps:
+          commands:
+            01_do4:
+              command: . /tmp/helm.sh
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT35M
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: t2.small
+      IamInstanceProfile: !Ref ExampleC9InstanceProfile
+#      SecurityGroups:
+#        - !Ref InstanceSecurityGroup
+      KeyName: !Ref KeyName
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: 'true'
+          DeviceIndex: '0'
+          GroupSet:
+            - !Ref InstanceSecurityGroup
+          SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: !Join ['', ['EC2-Host-',!Ref AWS::StackName]]
+      UserData: !Base64
+        'Fn::Join':
+          - ''
+          - - |
+              #!/bin/bash -x
+            - 'sudo yum install -y aws-cfn-bootstrap'
+            - |+
+              # update standard utils
+            - 'sudo yum update -y'
+            - |+
+              # Install the files and packages from the metadata
+            - '/opt/aws/bin/cfn-init -v '
+            - '         --stack '
+            - !Ref 'AWS::StackName'
+            - '         --resource bastionHost '
+            - '         --configsets resources'
+            - '         --region '
+            - !Ref 'AWS::Region'
+            - |+
+
+            - |
+              # Signal the status from cfn-init
+            - '/opt/aws/bin/cfn-signal -e $? '
+            - '         --stack '
+            - !Ref 'AWS::StackName'
+            - '         --resource bastionHost '
+            - '         --region '
+            - !Ref 'AWS::Region'
+            - |+
+
+################## PERMISSIONS AND ROLES #################
+  ExampleC9Role:
+    Type: AWS::IAM::Role
+    Properties:
+      Tags:
+        - Key: Environment
+          Value: AWS Example
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+            - ssm.amazonaws.com
+            - eks.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/AdministratorAccess
+      Path: "/"
+
+  ExampleC9LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName:
+          Fn::Join:
+          - ''
+          - - ExampleC9LambdaPolicy-
+            - Ref: AWS::Region
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: arn:aws:logs:*:*:*
+          - Effect: Allow
+            Action:
+            - cloudformation:DescribeStacks
+            - cloudformation:DescribeStackEvents
+            - cloudformation:DescribeStackResource
+            - cloudformation:DescribeStackResources
+            - ec2:DescribeInstances
+            - ec2:DescribeIamInstanceProfileAssociations
+            - ec2:AssociateIamInstanceProfile
+            - ec2:ModifyInstanceAttribute
+            - ec2:ReplaceIamInstanceProfileAssociation
+            - iam:ListInstanceProfiles
+            - iam:PassRole
+            Resource: "*"
+
+################## LAMBDA BOOTSTRAP FUNCTION ################
+
+  ExampleC9BootstrapInstanceLambda:
+    Description: Bootstrap Cloud9 instance
+    Type: Custom::ExampleC9BootstrapInstanceLambda
+    Condition: CreateC9
+    DependsOn:
+    - ExampleC9BootstrapInstanceLambdaFunction
+    - ExampleC9Instance
+    - ExampleC9InstanceProfile
+    - ExampleC9LambdaExecutionRole
+    Properties:
+      Tags:
+        - Key: Environment
+          Value: AWS Example
+      ServiceToken:
+        Fn::GetAtt:
+        - ExampleC9BootstrapInstanceLambdaFunction
+        - Arn
+      REGION:
+        Ref: AWS::Region
+      StackName:
+        Ref: AWS::StackName
+      EnvironmentId:
+        Ref: ExampleC9Instance
+      LabIdeInstanceProfileName:
+        Ref: ExampleC9InstanceProfile
+      LabIdeInstanceProfileArn:
+        Fn::GetAtt:
+        - ExampleC9InstanceProfile
+        - Arn
+
+  ExampleC9BootstrapInstanceLambdaFunction:
+    Type: AWS::Lambda::Function
+    Condition: CreateC9
+    Properties:
+      Tags:
+        - Key: Environment
+          Value: AWS Example
+      Handler: index.lambda_handler
+      Role:
+        Fn::GetAtt:
+        - ExampleC9LambdaExecutionRole
+        - Arn
+      Runtime: python3.6
+      MemorySize: 256
+      Timeout: '600'
+      Code:
+        ZipFile: |
+          from __future__ import print_function
+          import boto3
+          import json
+          import os
+          import time
+          import traceback
+          import cfnresponse
+          import logging
+
+          logger = logging.getLogger(__name__)
+          logger.setLevel(logging.INFO)
+          
+          def lambda_handler(event, context):
+              logger.info('event: {}'.format(event))
+              logger.info('context: {}'.format(context))
+              responseData = {}
+
+              print('Received event: %s' % json.dumps(event))
+
+          
+              if event['RequestType'] == 'Create':
+                  try:
+                      # Open AWS clients
+                      ec2 = boto3.client('ec2')
+          
+                      # Get the InstanceId of the Cloud9 IDE
+                      #instance = ec2.describe_instances(Filters=[{'Name': 'tag:Name','Values': ['aws-cloud9-'+event['ResourceProperties']['StackName']+'-'+event['ResourceProperties']['EnvironmentId']]}])['Reservations'][0]['Instances'][0]
+                      instance = ec2.describe_instances(Filters=[{'Name': 'tag:Name','Values': ['aws-cloud9-CheckPointCloud9-'+event['ResourceProperties']['EnvironmentId']]}])['Reservations'][0]['Instances'][0]
+                      logger.info('instance: {}'.format(instance))
+
+                      instance_id = instance['InstanceId']
+                      #iam_assoc_id = ec2.describe_iam_instance_profile_associations(Filters=[{'Name':'instance-id','Values':[instance_id]}])['IamInstanceProfileAssociations'][0]['AssociationId']
+
+                      #Disable Cloud9 managed temporary credentials BEFORE Bootstrapping
+                      #client = boto3.client('cloud9')
+
+                      #r2 = client.update_environment(environmentId=event['ResourceProperties']['EnvironmentId'], name=event['ResourceProperties']['StackName'], description=event['ResourceProperties']['StackName'], managedCredentialsAction='DISABLE')
+
+                      # Create the IamInstanceProfile request object
+                      iam_instance_profile = {
+                          'Arn': event['ResourceProperties']['LabIdeInstanceProfileArn'],
+                          'Name': event['ResourceProperties']['LabIdeInstanceProfileName']
+                      }
+                      logger.info('iam_instance_profile: {}'.format(iam_instance_profile))
+          
+                      # Wait for Instance to become ready before adding Role
+                      instance_state = instance['State']['Name']
+                      logger.info('instance_state: {}'.format(instance_state))
+
+                      while instance_state != 'running':
+                          time.sleep(5)
+                          instance_state = ec2.describe_instances(InstanceIds=[instance['InstanceId']])
+                          # logger.info('instance_state: {}'.format(instance_state))
+
+                      # attach instance profile
+                      #response = ec2.replace_iam_instance_profile_association(IamInstanceProfile=iam_instance_profile, AssociationId=iam_assoc_id)
+                      response = ec2.associate_iam_instance_profile(IamInstanceProfile=iam_instance_profile, InstanceId=instance['InstanceId'])
+
+                      logger.info('response - associate_iam_instance_profile: {}'.format(response))
+                      # JSK 10/18 r_ec2 = boto3.resource('ec2')
+
+                      responseData = {'Success': 'Started bootstrapping for instance: '+instance['InstanceId']}
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData, 'CustomResourcePhysicalID')
+                      
+                  except Exception as e:
+                      logger.error(e, exc_info=True)
+                      # JSK responseData = {'Error': traceback.format_exc(e)}
+                      responseData = {'Error':'There was a problem associating IAM profile to the Cloud9 Instance'}
+                      cfnresponse.send(event, context, cfnresponse.FAILED, responseData, 'CustomResourcePhysicalID')
+################## SSM BOOTSRAP HANDLER ###############
+  ExampleC9OutputBucket:
+    Type: AWS::S3::Bucket
+    Condition: CreateC9
+    DeletionPolicy: Delete
+
+  ExampleC9SSMDocument: 
+    Type: AWS::SSM::Document
+    Condition: CreateC9
+    Properties: 
+      Tags:
+        - Key: Environment
+          Value: AWS Example
+      Content: Yaml
+      DocumentType: Command
+      Content: 
+        schemaVersion: '2.2'
+        description: Bootstrap Cloud9 Instance
+        mainSteps:
+        - action: aws:runShellScript
+          name: ExampleC9bootstrap
+          inputs:
+            runCommand:
+            - "#!/bin/bash"
+            # Uninstall awscli v1 and install awscli v2
+            - sudo pip uninstall awscli -y
+            - curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+            - unzip awscliv2.zip
+            - sudo ./aws/install
+            - hash  -r
+
+            # Install jq command-line tool for parsing JSON, and bash-completion
+            - sudo yum -y install jq gettext bash-completion moreutils
+
+            #Install kubectl
+            - curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+            - sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+
+            # Install Helm
+            - wget https://get.helm.sh/helm-v3.6.0-linux-amd64.tar.gz
+            - tar -zxvf helm-v3.6.0-linux-amd64.tar.gz
+            - sudo cp linux-amd64/helm /usr/local/bin/helm
+
+            #install eksctl
+            - curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
+            - sudo mv /tmp/eksctl /usr/local/bin
+
+            # Install yq for yaml processing
+            - echo 'yq() { docker run --rm -i -v "${PWD}":/workdir mikefarah/yq yq "$@" }' | tee -a ~/.bashrc && source ~/.bashrc
+
+            # Verify the binaries are in the path and executable
+            - for command in jq aws
+            - do
+            -  which $command &>/dev/null && echo "$command in path" || echo "$command NOT FOUND"
+            - done
+
+            # Remove existing credentials file.
+            - rm -vf ${HOME}/.aws/credentials
+
+            # Set the ACCOUNT_ID and the region to work with our desired region
+            - export AWS_REGION=$(curl -s 169.254.169.254/latest/dynamic/instance-identity/document | jq -r '.region')
+            - test -n "$AWS_REGION" && echo AWS_REGION is "$AWS_REGION" || echo AWS_REGION is not set
+
+            # Configure .bash_profile
+            - export ACCOUNT_ID=$(sudo aws sts get-caller-identity --output text --query Account)
+            - echo "export ACCOUNT_ID=${ACCOUNT_ID}" | tee -a ~/.bash_profile
+            - echo "export AWS_REGION=${AWS_REGION}" | tee -a ~/.bash_profile
+            - aws configure set default.region ${AWS_REGION}
+            - aws configure get default.region
+
+            #enable kubectl bash_completion
+            - kubectl completion bash >>  ~/.bash_completion
+            - . /etc/profile.d/bash_completion.sh
+            - . ~/.bash_completion
+
+            - echo "beforeGitClone.txt"
+
+
+            - echo "goBeforeK8sCreate.txt"
+            #create a K8s cluster
+            - !Join ['', ['export EKS_CLUSTER="C1', !Ref AWS::StackName, '"']]
+            - echo "export EKS_CLUSTER=${EKS_CLUSTER}"  | tee -a ~/.bash_profile
+
+            - export ZONES="${AWS_REGION}a,${AWS_REGION}b,${AWS_REGION}c"
+            - echo "export ZONES=${ZONES}" | tee -a ~/.bash_profile
+
+            - eksctl create cluster --name ${EKS_CLUSTER} --version 1.21 --region ${AWS_REGION} --node-type t2.xlarge --nodes 2 --zones ${ZONES}
+            - echo "touch goAfterK8sCreate.txt"
+
+            - aws eks update-kubeconfig --name ${EKS_CLUSTER} --region ${AWS_REGION}
+            - sudo aws eks update-kubeconfig --name ${EKS_CLUSTER} --region ${AWS_REGION}
+
+            - !Join ['', ['aws eks update-kubeconfig --name ${EKS_CLUSTER} --region ${AWS_REGION} --role-arn arn:aws:iam::${ACCOUNT_ID}:role/', !Ref ExampleC9Role]]
+            - !Join ['', ['sudo aws eks update-kubeconfig --name ${EKS_CLUSTER} --region ${AWS_REGION} --role-arn arn:aws:iam::${ACCOUNT_ID}:role/', !Ref ExampleC9Role]]
+
+            - git clone https://github.com/chkp-ivanmar/cpx-2021-demo.git
+            - echo "Install the attacker client"
+            - helm install -f cpx-2021-demo/attacker-cpx/values.yaml --namespace attacker --create-namespace attacker-client cpx-2021-demo/attacker-cpx
+
+            - echo "Install our sushi restaurant web page"
+            - helm install -f cpx-2021-demo/cpx-sushi/values.yaml --namespace sushi --create-namespace sushi-restaurant cpx-2021-demo/cpx-sushi
+
+            - echo "Bootstrap completed with return code $?"
+
+  
+  ExampleC9BootstrapAssociation:
+    Condition: CreateC9
+    Type: AWS::SSM::Association
+    DependsOn: ExampleC9OutputBucket 
+    Properties: 
+      Name: !Ref ExampleC9SSMDocument
+      OutputLocation: 
+        S3Location:
+          OutputS3BucketName: !Ref ExampleC9OutputBucket
+          OutputS3KeyPrefix: bootstrapoutput
+      Targets:
+        - Key: !Join
+          - ""
+          - - "tag:SSMBootstrap"
+            - Ref: AWS::StackName
+          Values:
+          - Active
+
+################## INSTANCE #####################
+  ExampleC9InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      Roles:
+      - Ref: ExampleC9Role
+
+  ExampleC9Instance:
+    Description: "-"
+    Condition: CreateC9
+    DependsOn:
+      - ExampleC9BootstrapAssociation
+      - ExampleC9Role
+    Type: AWS::Cloud9::EnvironmentEC2
+    Properties:
+      Description: AWS Cloud9 instance for Examples
+      AutomaticStopTimeMinutes: 3600
+#      ConnectionType: CONNECT_SSM
+      InstanceType:
+        Ref: ExampleC9InstanceType
+#      SubnetId: !Ref PrivateSubnetId
+      Name: CheckPointCloud9
+#        Ref: AWS::StackName
+      OwnerArn: !If [Create3rdPartyResources, !Ref ExampleOwnerArn, !Join [ "", ["arn:aws:sts::", !Ref AWS::AccountId, ":assumed-role/TeamRole/MasterKey"]]]
+
+      Tags:
+        - Key: !Join
+          - ""
+          - - "SSMBootstrap"
+            - Ref: AWS::StackName
+          Value: Active
+        - 
+          Key: Environment
+          Value: AWS Example
+################## CG Account Setup #####################
+  ssmKey:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: '/dev/ssm/CGPMkey'
+      Description: 'CGPMKey'
+      Type: String
+      Value: !Ref apiKey
+  ssmSecret:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: '/dev/ssm/CGPMsecret'
+      Description: 'CGPM Secret'
+      Type: String
+      Value: !Ref apiSecret
+  ssmMail:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: '/dev/ssm/mailKey'
+      Description: 'Mail Secret'
+      Type: String
+      Value: !Ref mailKey
+
+  LambdaNetworkRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Policies:
+        - PolicyName: Lambda-Deploy-Subnets
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'logs:*'
+                  - 'ssm:GetParameter'
+                Resource:
+                  - '*'
+        - PolicyName: Lambda-Get-S3-Layer
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                Resource:
+                  Fn::Join:
+                  - ''
+                  - - 'arn:aws:s3:::'
+                    - Ref: S3BucketName
+                    - '-'
+                    - Ref AWS::Region
+                    - '/'
+                    - Ref: S3KeyPrefix
+                    - '/*'
+
+  CGSubFunction:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      CompatibleRuntimes: [python3.7, python3.8, python3.9]
+      Content:
+        S3Bucket: !Sub 'aws-jam-challenge-resources-${AWS::Region}'
+        S3Key:
+          Fn::Join:
+          - ''
+          - - Ref: S3KeyPrefix
+            - 'cg-account-layer.zip'
+
+  CGCreateAccountFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Description: Create CG Accounts
+      Layers: [!Ref CGSubFunction]
+      Code:
+        ZipFile: |-
+          import LambdaD9Code
+          import logging
+          import cfnresponse
+          import json
+          import boto3
+          import time
+
+          logger = logging.getLogger(__name__)
+          logger.setLevel(logging.INFO)
+
+          def lambda_handler(event, context):
+              print('Received event: %s' % json.dumps(event))
+
+              ssm = boto3.client('ssm')
+              apiKey = ssm.get_parameter(Name='/dev/ssm/CGPMkey')['Parameter']['Value']
+              apiSecret = ssm.get_parameter(Name='/dev/ssm/CGPMsecret')['Parameter']['Value']
+              mailKey = ssm.get_parameter(Name='/dev/ssm/mailKey')['Parameter']['Value']
+
+              awsAcctId = event['ResourceProperties']['awsAcctId']
+
+              status = cfnresponse.SUCCESS
+
+              responseData = {}
+              responseData["entAcctId"] = 999999
+              responseData["newAdminId"] = 888888
+
+              try:
+
+                  headers = {
+                      "Content-Type": "application/json",
+                      "Accept": "application/json",
+                      "Cache-Control": "no-cache"
+                  }
+
+                  if event['RequestType'] == 'Delete':
+                      deleteResponse = LambdaD9Code.delete_child_account(event['PhysicalResourceId'], headers, apiKey, apiSecret)
+
+                      cfnresponse.send(event, context, status, responseData)
+                      logger.info("CG Account DELETION Succeeded!!!")
+                      return
+
+                  else:
+                      entAcctId, tenantLogin = LambdaD9Code.create_ent_account(awsAcctId, headers, apiKey, apiSecret)
+
+                      responseData["entAcctId"] = entAcctId
+
+                      entToken = LambdaD9Code.get_ent_token(entAcctId, headers, apiKey, apiSecret)
+
+                      headers["Authorization"] = "Bearer " + entToken
+
+                      adminRoleId = LambdaD9Code.get_role(headers)
+
+                      newAdminId, adminLogin = LambdaD9Code.add_new_admin(headers, awsAcctId)
+
+                      responseData["newAdminId"] = newAdminId
+
+                      LambdaD9Code.modify_admin(headers, adminRoleId, newAdminId)
+
+                      responseData["tenantLogin"] = tenantLogin
+                      responseData["adminLogin"] = adminLogin
+                      responseData["tenantToken"] = entToken
+
+                      time.sleep(60)
+                      responseData["resetURL"] = LambdaD9Code.getPwResetUrl(mailKey, adminLogin)
+
+                      cfnresponse.send(event, context, status, responseData, entAcctId)
+                      logger.info("CG Account creation Succeeded!!!")
+                      return
+
+              except Exception as e:
+                  logging.error('Exception: %s' % e, exc_info=True)
+                  status = cfnresponse.FAILED
+                  logger.info("CG Account creation Failed!!!")
+                  return
+
+      Runtime: python3.8
+      Handler: index.lambda_handler
+      Timeout: 300
+      Role: !GetAtt LambdaNetworkRole.Arn
+
+  CGAccountCreateInvoke:
+    Type: Custom::CGAccountCreateInvoke
+    Condition: CGAccountDeployQ
+    DependsOn:
+    - ssmKey
+    - ssmSecret
+    - ssmMail
+    - CGCreateAccountFunction
+    - CGSubFunction
+#    - bastionHost
+    Properties:
+      ServiceToken: !GetAtt CGCreateAccountFunction.Arn
+      awsAcctId: !Ref AWS::AccountId
+
+  CGassetFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Description: Check EKS Onboarding in CloudGuard
+      Layers: [!Ref CGSubFunction]
+      Code:
+        ZipFile: |-
+          import LambdaD9Code
+          import logging
+          import json
+          import boto3
+
+          logger = logging.getLogger(__name__)
+          logger.setLevel(logging.INFO)
+
+          def lambda_handler(event, context):
+              print('Received event: %s' % json.dumps(event))
+
+              ssm = boto3.client('ssm')
+              apiKey = ssm.get_parameter(Name='/dev/ssm/CGPMkey')['Parameter']['Value']
+              apiSecret = ssm.get_parameter(Name='/dev/ssm/CGPMsecret')['Parameter']['Value']
+
+              entAcctId = event['entAcctId']
+
+              try:
+
+                  header = {
+                  "Content-Type": "application/json",
+                  "Accept": "application/json",
+                  "Cache-Control": "no-cache"
+                  }
+
+                  entToken = LambdaD9Code.get_ent_token(entAcctId, header, apiKey, apiSecret)
+
+                  header["Authorization"] = "Bearer " + entToken
+
+                  status = LambdaD9Code.checkAssets(header)
+
+                  if status:
+                      logger.info("CG has a bunch of Assets, so presume EKS cluster onboarded!!!")
+                  else:
+                      logger.info("CG has no assets!!!")
+
+              except Exception as e:
+                  logging.error('Exception: %s' % e, exc_info=True)
+                  logger.info("CG has no assets!!!")
+
+              return {
+                  'assetFound': status
+              }
+
+      Runtime: python3.8
+      Handler: index.lambda_handler
+      Timeout: 20
+      Role: !GetAtt LambdaNetworkRole.Arn
+
+  CGAdmissionControlFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Description: Check Admission Control in CloudGuard
+      Layers: [!Ref CGSubFunction]
+      Code:
+        ZipFile: |-
+          import LambdaD9Code
+          import logging
+          import json
+          import boto3
+
+          logger = logging.getLogger(__name__)
+          logger.setLevel(logging.INFO)
+
+          def lambda_handler(event, context):
+              print('Received event: %s' % json.dumps(event))
+
+              ssm = boto3.client('ssm')
+              apiKey = ssm.get_parameter(Name='/dev/ssm/CGPMkey')['Parameter']['Value']
+              apiSecret = ssm.get_parameter(Name='/dev/ssm/CGPMsecret')['Parameter']['Value']
+
+              entAcctId = event['entAcctId']
+
+              try:
+
+                  header = {
+                  "Content-Type": "application/json",
+                  "Accept": "application/json",
+                  "Cache-Control": "no-cache"
+                  }
+
+                  entToken = LambdaD9Code.get_ent_token(entAcctId, header, apiKey, apiSecret)
+
+                  header["Authorization"] = "Bearer " + entToken
+
+                  status = LambdaD9Code.checkK8sAdmissionControl(header)
+
+                  if status:
+                      logger.info("Admission Control Passed!!!")
+                  else:
+                      logger.info("Admission Control Failed!!!")
+
+              except Exception as e:
+                  logging.error('Exception: %s' % e, exc_info=True)
+                  logger.info("CG Admission Control check had an exception!!!")
+
+              return status
+
+      Runtime: python3.8
+      Handler: index.lambda_handler
+      Timeout: 20
+      Role: !GetAtt LambdaNetworkRole.Arn
+
+  CGk8sassmtFunction:
+      Type: 'AWS::Lambda::Function'
+      Properties:
+        Description: Check CG K8s Image Assurance
+        Layers: [!Ref CGSubFunction]
+        Code:
+          ZipFile: |-
+            import LambdaD9Code
+            import logging
+            import json
+            import boto3
+
+            logger = logging.getLogger(__name__)
+            logger.setLevel(logging.INFO)
+
+            def lambda_handler(event, context):
+                print('Received event: %s' % json.dumps(event))
+
+                ssm = boto3.client('ssm')
+                apiKey = ssm.get_parameter(Name='/dev/ssm/CGPMkey')['Parameter']['Value']
+                apiSecret = ssm.get_parameter(Name='/dev/ssm/CGPMsecret')['Parameter']['Value']
+
+                entAcctId = event['entAcctId']
+                assmtId = event['assmtId']
+
+                try:
+
+                    headers = {
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "Cache-Control": "no-cache"
+                    }
+
+                    entToken = LambdaD9Code.get_ent_token(entAcctId, headers, apiKey, apiSecret)
+
+                    headers["Authorization"] = "Bearer " + entToken
+
+                    status = LambdaD9Code.checkK8sAssessment(assmtId, headers)
+
+                    if status == "green":
+                        logger.info("CG Admission Control Assesment Found!!!")
+                    elif status == "platinum":
+                        logger.info("CG Admission Control Assessment Passed enough checks!!!")
+                    else:
+                        logger.info("CG Admission Control Assesment Not Found!!!")
+
+
+                except Exception as e:
+                    logging.error('Exception: %s' % e, exc_info=True)
+                    logger.info("CG Admission Control Assesement Not Found!!!")
+
+                return {
+                    'assmtFound': status
+                }
+
+        Runtime: python3.8
+        Handler: index.lambda_handler
+        Timeout: 20
+        Role: !GetAtt LambdaNetworkRole.Arn
+
+  CGalertIdFunction:
+      Type: 'AWS::Lambda::Function'
+      Properties:
+        Description: Check CG alert ID's
+        Layers: [!Ref CGSubFunction]
+        Code:
+          ZipFile: |-
+            import LambdaD9Code
+            import logging
+            import json
+            import boto3
+
+            logger = logging.getLogger(__name__)
+            logger.setLevel(logging.INFO)
+
+            def lambda_handler(event, context):
+                print('Received event: %s' % json.dumps(event))
+
+                ssm = boto3.client('ssm')
+                apiKey = ssm.get_parameter(Name='/dev/ssm/CGPMkey')['Parameter']['Value']
+                apiSecret = ssm.get_parameter(Name='/dev/ssm/CGPMsecret')['Parameter']['Value']
+
+                entAcctId = event['entAcctId']
+                findingId = event['findingId']
+
+                try:
+
+                    headers = {
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "Cache-Control": "no-cache"
+                    }
+
+                    entToken = LambdaD9Code.get_ent_token(entAcctId, headers, apiKey, apiSecret)
+
+                    headers["Authorization"] = "Bearer " + entToken
+
+                    status = LambdaD9Code.checkFinding(findingId, headers)
+
+                    if status == "RuntimeFindingPassed":
+                        logger.info("CG Runtime Protection AlertID Found!!!")
+                    elif status == "ThreatIntelPassed":
+                        logger.info("CG Threat Intel AlertID Found!!!")
+                    else:
+                        logger.info("CG AlertID Not Found!!!")
+
+                except Exception as e:
+                    logging.error('Exception: %s' % e, exc_info=True)
+                    logger.info("CG Alert ID Not Found!!!")
+
+                return {
+                    'alertIDFound': status
+                }
+        Runtime: python3.8
+        Handler: index.lambda_handler
+        Timeout: 20
+        Role: !GetAtt LambdaNetworkRole.Arn
+
+  CGThreatAlertIdFunction:
+      Type: 'AWS::Lambda::Function'
+      Properties:
+        Description: Search CG alert ID's for threat intelligence alert
+        Layers: [!Ref CGSubFunction]
+        Code:
+          ZipFile: |-
+            import LambdaD9Code
+            import logging
+            import json
+            import boto3
+
+            logger = logging.getLogger(__name__)
+            logger.setLevel(logging.INFO)
+
+            def lambda_handler(event, context):
+                print('Received event: %s' % json.dumps(event))
+
+                ssm = boto3.client('ssm')
+                apiKey = ssm.get_parameter(Name='/dev/ssm/CGPMkey')['Parameter']['Value']
+                apiSecret = ssm.get_parameter(Name='/dev/ssm/CGPMsecret')['Parameter']['Value']
+
+                entAcctId = event['entAcctId']
+
+                try:
+
+                    headers = {
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "Cache-Control": "no-cache"
+                    }
+
+                    entToken = LambdaD9Code.get_ent_token(entAcctId, headers, apiKey, apiSecret)
+
+                    headers["Authorization"] = "Bearer " + entToken
+
+                    status = LambdaD9Code.searchFindingForIntelligence(headers)
+
+                    if status == "ThreatIntelPassed":
+                        logger.info("CG Threat Intel AlertID Found!!!")
+                    else:
+                        logger.info("CG AlertID Not Found!!!")
+
+                except Exception as e:
+                    logging.error('Exception: %s' % e, exc_info=True)
+                    logger.info("CG Alert ID Not Found!!!")
+
+                return {
+                    'alertIDFound': status
+                }
+        Runtime: python3.8
+        Handler: index.lambda_handler
+        Timeout: 20
+        Role: !GetAtt LambdaNetworkRole.Arn
+
+Outputs: 
+  Cloud9IDE:
+    Condition: CreateC9
+    Value:
+      Fn::Join:
+      - ''
+      - - https://
+        - Ref: AWS::Region
+        - ".console.aws.amazon.com/cloud9/ide/"
+        - Ref: ExampleC9Instance
+        - "?region="
+        - Ref: AWS::Region
+  EC2HostIP:
+    Description: Public IP of the EC2-Host required for accessing EKS Cluster
+    Condition: CreateEC2
+    Value: !GetAtt bastionHost.PublicIp
+  KeyName:
+    Description: The SSH KeyPair Name
+    Value: !Ref KeyName
+  CloudGuardLogin:
+    Condition: CGAccountDeployQ
+    Description: CGPM Admin Login to be used by student
+    Value: !GetAtt CGAccountCreateInvoke.adminLogin
+  CloudGuardPasswordResetURL:
+    Condition: CGAccountDeployQ
+    Description: CGPM Admin Password Reset
+    Value: !GetAtt CGAccountCreateInvoke.resetURL
+  CloudGuardURL:
+    Condition: CGAccountDeployQ
+    Description: URL for logging into CloudGuard
+    Value: https://secure.dome9.com/v2/login
+  assetCheckArn:
+    Description: The Asset function gets setup but not invokved.  To be invoked by a lambda verification of Jams Task
+    Value: !GetAtt CGassetFunction.Arn
+  admissionControlArn:
+    Description: The Admission Control function gets setup but not invokved.  To be invoked by a lambda verification of Jams Task
+    Value: !GetAtt CGAdmissionControlFunction.Arn
+  k8sassmtCheckArn:
+    Description: The K8s Admission Control Check function gets setup but not invokved.  To be invoked by a lambda verification of Jams Task
+    Value: !GetAtt CGk8sassmtFunction.Arn
+  alertCheckArn:
+    Description: The AlertId Check function gets setup but not invokved.  To be invoked by a lambda verification of Jams Task
+    Value: !GetAtt CGalertIdFunction.Arn
+  threatAlertCheckArn:
+    Description: The Threat Alert Check function gets setup but not invokved.  To be invoked by a lambda verification of Jams Task
+    Value: !GetAtt CGThreatAlertIdFunction.Arn
+  entAcctId:
+    Condition: CGAccountDeployQ
+    Description: CGPM Tenant Account ID
+    Value: !GetAtt CGAccountCreateInvoke.entAcctId
