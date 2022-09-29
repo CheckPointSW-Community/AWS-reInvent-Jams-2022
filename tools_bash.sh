@@ -1,4 +1,4 @@
-"#!/bin/bash"
+#!/bin/bash -x
 
 sudo amazon-linux-extras enable docker
 
@@ -9,8 +9,8 @@ cat <<EOF > /etc/yum.repos.d/kubernetes.repo
 name=Kubernetes
 baseurl=https://packages.cloud.google.com/yum/repos/kubernetes-el7-x86_64
 enabled=1
-gpgcheck=1
-repo_gpgcheck=1
+gpgcheck=
+repo_gpgcheck=0
 gpgkey=https://packages.cloud.google.com/yum/doc/yum-key.gpg https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
 EOF
 
@@ -56,7 +56,7 @@ echo "export EKS_CLUSTER=CheckPointJamsEKS"  | tee -a /home/ec2-user/.bash_profi
 export ZONES="${AWS_REGION}a,${AWS_REGION}b,${AWS_REGION}c"
 echo "export ZONES=${ZONES}" | tee -a ~/.bash_profile
 
-eksctl create cluster --name ${EKS_CLUSTER} --version 1.21 --region ${AWS_REGION} --nodes 2 --managed=false --zones ${ZONES} --asg-access --external-dns-access --full-ecr-access --appmesh-access --alb-ingress-access --instance-selector-vcpus=4 --instance-selector-memory=16 --instance-selector-gpus=0 --managed=true --max-pods-per-node=25
+eksctl create cluster --name ${EKS_CLUSTER} --version 1.22 --region ${AWS_REGION} --nodes 2 --managed=false --zones ${ZONES} --asg-access --external-dns-access --full-ecr-access --appmesh-access --alb-ingress-access --instance-selector-vcpus=4 --instance-selector-memory=16 --instance-selector-gpus=0 --managed=true --max-pods-per-node=25
 
 aws eks update-kubeconfig --name ${EKS_CLUSTER} --region ${AWS_REGION}
 

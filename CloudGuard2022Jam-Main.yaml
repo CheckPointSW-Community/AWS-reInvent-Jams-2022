@@ -18,7 +18,7 @@ Parameters:
     Type: String
     Default: t3.small
     AllowedValues:
-      - t2.micro
+      - t2.micro`
       - t3.micro
       - t3.small
       - t3.medium
@@ -38,7 +38,7 @@ Parameters:
   ExampleC9InstanceVolumeSize: 
     Type: Number
     Description: The Size in GB of the Cloud9 Instance Volume. 
-    Default: 15
+    Default: '15'
   apiKey:
     Description: API Key for deploying new CGPM
     Type: String
@@ -59,13 +59,11 @@ Parameters:
     AllowedPattern: ^[0-9a-zA-Z]+([0-9a-zA-Z-]*[0-9a-zA-Z])*$
     Type: String
     Default: 'aws-jam-challenge-resources'
-    Description: S3 Bucket containing code to be copied into region (must have public access)
   S3KeyPrefix:
     Description: Source S3 Bucket folder
     AllowedPattern: ^[0-9a-zA-Z-/]*$
     Type: String
     Default: 'chkp-wkldprotect-containers/'
-    Description: S3 Bucket folder containing code to be copied into region (must have public access)
   CGAccountLayerZip:
     Type: String
     Default: 'cg-account-layer.zip'
@@ -125,14 +123,14 @@ Resources:
       EnableDnsHostnames: true
       Tags:
         - Key: Name
-          Value: CheckPoint Jam 2021
+          Value: CheckPoint Jam 2022
 
   InternetGateway:
     Type: AWS::EC2::InternetGateway
     Properties:
       Tags:
         - Key: Name
-          Value: Check Point Jam 2021
+          Value: Check Point Jam 2022
 
   InternetGatewayAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
@@ -149,7 +147,7 @@ Resources:
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
-          Value: Check Point Jam 2021 Public Subnet (AZ1)
+          Value: Check Point Jam 2022 Public Subnet (AZ1)
 
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
@@ -157,7 +155,7 @@ Resources:
       VpcId: !Ref VPC
       Tags:
         - Key: Name
-          Value: Check Point Jam 2021 Public Routes
+          Value: Check Point Jam 2022 Public Routes
 
   DefaultPublicRoute:
     Type: AWS::EC2::Route
@@ -200,27 +198,43 @@ Resources:
         configSets:
           resources:
             - bashscripts
+            - clean_scripts
+            - update_aws_cli
             - cli_tools
             - install_apps
         bashscripts:
           files:
             /tmp/tools_bash.sh:
-              source: https://aws-jam-challenge-resources.s3.amazonaws.com/chkp-wkldprotect-containers/tools_bash.sh
+              source: https://aws-jam-challenge-resources.s3.amazonaws.com/chkp-cspm-jam/tools_bash.sh
               mode: 100777
               owner: root
               group: root
             /tmp/helm.sh:
-              source: https://aws-jam-challenge-resources.s3.amazonaws.com/chkp-wkldprotect-containers/helm.sh
+              source: https://aws-jam-challenge-resources.s3.amazonaws.com/chkp-cspm-jam/helm.sh
               mode: 000777
               owner: root
               group: root
-        cli_tools:
+        clean_scripts:
           commands:
             01_do:
+              command: '/bin/dos2unix /tmp/tools_bash.sh'
+            02_do:
+              command: '/bin/dos2unix /tmp/helm.sh'
+        update_aws_cli:
+          commands:
+            03_do:
+              command: 'curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"'
+            04_do:
+              command: 'unzip /tmp/awscliv2.zip -d /tmp/awscli'
+            05_do:
+              command: 'sudo /tmp/awscli/aws/install'
+        cli_tools:
+          commands:
+            06_do:
               command: . /tmp/tools_bash.sh
         install_apps:
           commands:
-            01_do4:
+            07_do:
               command: . /tmp/helm.sh
     CreationPolicy:
       ResourceSignal:
@@ -241,34 +255,40 @@ Resources:
       Tags:
         - Key: Name
           Value: !Join ['', ['EC2-Host-',!Ref AWS::StackName]]
-      UserData: !Base64
-        'Fn::Join':
+      UserData: 
+        'Fn::Base64': !Join
           - ''
           - - |
               #!/bin/bash -x
-            - 'sudo yum install -y aws-cfn-bootstrap'
             - |+
-              # update standard utils
-            - 'sudo yum update -y'
+              
+            - sudo yum update -y
             - |+
+              
+            - sudo yum install -y aws-cfn-bootstrap
+            - |+
+
+            - sudo yum install -y dos2unix
+            - |+
+
               # Install the files and packages from the metadata
-            - '/opt/aws/bin/cfn-init -v '
-            - '         --stack '
-            - !Ref 'AWS::StackName'
-            - '         --resource bastionHost '
-            - '         --configsets resources'
-            - '         --region '
-            - !Ref 'AWS::Region'
+            - "/opt/aws/bin/cfn-init -v "
+            - "         --stack "
+            - !Ref "AWS::StackName"
+            - "         --resource bastionHost "
+            - "         --configsets resources"
+            - "         --region "
+            - !Ref "AWS::Region"
             - |+
 
             - |
               # Signal the status from cfn-init
-            - '/opt/aws/bin/cfn-signal -e $? '
-            - '         --stack '
-            - !Ref 'AWS::StackName'
-            - '         --resource bastionHost '
-            - '         --region '
-            - !Ref 'AWS::Region'
+            - "/opt/aws/bin/cfn-signal -e $? "
+            - "         --stack "
+            - !Ref "AWS::StackName"
+            - "         --resource bastionHost "
+            - "         --region "
+            - !Ref "AWS::Region"
             - |+
 
 ################## PERMISSIONS AND ROLES #################
@@ -380,7 +400,7 @@ Resources:
         Fn::GetAtt:
         - ExampleC9LambdaExecutionRole
         - Arn
-      Runtime: python3.6
+      Runtime: python3.8
       MemorySize: 256
       Timeout: '600'
       Code:
@@ -1104,16 +1124,16 @@ Outputs:
     Description: URL for logging into CloudGuard
     Value: https://secure.dome9.com/v2/login
   assetCheckArn:
-    Description: The Asset function gets setup but not invokved.  To be invoked by a lambda verification of Jams Task
+    Description: The Asset function gets setup but not invoked.  To be invoked by a lambda verification of Jams Task
     Value: !GetAtt CGassetFunction.Arn
   admissionControlArn:
-    Description: The Admission Control function gets setup but not invokved.  To be invoked by a lambda verification of Jams Task
+    Description: The Admission Control function gets setup but not invoked.  To be invoked by a lambda verification of Jams Task
     Value: !GetAtt CGAdmissionControlFunction.Arn
   k8sassmtCheckArn:
-    Description: The K8s Admission Control Check function gets setup but not invokved.  To be invoked by a lambda verification of Jams Task
+    Description: The K8s Admission Control Check function gets setup but not invoked.  To be invoked by a lambda verification of Jams Task
     Value: !GetAtt CGk8sassmtFunction.Arn
   alertCheckArn:
-    Description: The AlertId Check function gets setup but not invokved.  To be invoked by a lambda verification of Jams Task
+    Description: The AlertId Check function gets setup but not invoked.  To be invoked by a lambda verification of Jams Task
     Value: !GetAtt CGalertIdFunction.Arn
   threatAlertCheckArn:
     Description: The Threat Alert Check function gets setup but not invokved.  To be invoked by a lambda verification of Jams Task
